@@ -11,6 +11,7 @@ import Profile from "@/pages/profile";
 import Destinations from "@/pages/destinations";
 import CruiseDetails from "@/pages/cruise-details";
 import Booking from "@/pages/booking";
+import Contact from "@/pages/contact";
 import Navbar from "@/components/layout/navbar";
 import Footer from "@/components/layout/footer";
 
@@ -34,6 +35,7 @@ function Router() {
           <Route path="/destinations" component={Destinations} />
           <Route path="/cruise/:id" component={CruiseDetails} />
           <Route path="/booking/:cruiseId" component={Booking} />
+          <Route path="/contact" component={Contact} />
           <Route component={NotFound} />
         </Switch>
       </main>
