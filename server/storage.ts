@@ -164,7 +164,15 @@ export class MemStorage implements IStorage {
       lastLogin: null,
       isVerified: false,
       resetToken: null,
-      resetTokenExpiry: null
+      resetTokenExpiry: null,
+      firstName: insertUser.firstName || null,
+      lastName: insertUser.lastName || null,
+      phone: insertUser.phone || null,
+      address: insertUser.address || null,
+      city: insertUser.city || null,
+      state: insertUser.state || null,
+      zipCode: insertUser.zipCode || null,
+      country: insertUser.country || null
     };
     this.usersData.set(id, user);
     return user;
@@ -284,6 +292,9 @@ export class MemStorage implements IStorage {
     const newCruise: Cruise = { 
       ...cruise, 
       id,
+      originalPrice: cruise.originalPrice || null,
+      isBestSeller: cruise.isBestSeller || false,
+      isNewItinerary: cruise.isNewItinerary || false,
       availableDates: cruise.availableDates || null
     };
     this.cruisesData.set(id, newCruise);
@@ -306,6 +317,8 @@ export class MemStorage implements IStorage {
     const newCabinType: CabinType = {
       ...cabinType,
       id,
+      imageUrl: cabinType.imageUrl || null,
+      priceModifier: cabinType.priceModifier || 0,
       amenities: cabinType.amenities || null
     };
     this.cabinTypesData.set(id, newCabinType);
@@ -353,12 +366,27 @@ export class MemStorage implements IStorage {
     return this.bookingsData.get(id);
   }
   
+  async getBookingByReference(reference: string): Promise<Booking | undefined> {
+    return Array.from(this.bookingsData.values()).find(
+      (booking) => booking.bookingReference === reference
+    );
+  }
+  
   async createBooking(booking: InsertBooking): Promise<Booking> {
     const id = this.currentBookingIds++;
+    const now = new Date();
+    const bookingReference = `BK-${Math.floor(Math.random() * 10000)}-${id}`;
+    
     const newBooking: Booking = { 
       ...booking, 
       id,
-      bookingDate: new Date() 
+      bookingDate: now,
+      updatedAt: now,
+      bookingReference,
+      status: booking.status || "pending",
+      specialRequests: booking.specialRequests || null,
+      paymentId: booking.paymentId || null,
+      paymentStatus: booking.paymentStatus || null
     };
     this.bookingsData.set(id, newBooking);
     return newBooking;
@@ -368,9 +396,93 @@ export class MemStorage implements IStorage {
     const existingBooking = this.bookingsData.get(id);
     if (!existingBooking) return undefined;
     
-    const updatedBooking = { ...existingBooking, status };
+    const updatedBooking = { 
+      ...existingBooking, 
+      status: status as "pending" | "confirmed" | "completed" | "cancelled",
+      updatedAt: new Date()
+    };
     this.bookingsData.set(id, updatedBooking);
     return updatedBooking;
+  }
+  
+  async cancelBooking(id: number, reason?: string): Promise<Booking | undefined> {
+    const existingBooking = this.bookingsData.get(id);
+    if (!existingBooking) return undefined;
+    
+    const updatedBooking = { 
+      ...existingBooking, 
+      status: "cancelled" as const,
+      specialRequests: reason || existingBooking.specialRequests,
+      updatedAt: new Date()
+    };
+    this.bookingsData.set(id, updatedBooking);
+    return updatedBooking;
+  }
+  
+  // Payment methods
+  async getPayments(bookingId: number): Promise<Payment[]> {
+    return Array.from(this.paymentsData.values()).filter(
+      (payment) => payment.bookingId === bookingId
+    );
+  }
+  
+  async getPayment(id: number): Promise<Payment | undefined> {
+    return this.paymentsData.get(id);
+  }
+  
+  async createPayment(payment: InsertPayment): Promise<Payment> {
+    const id = this.currentPaymentIds++;
+    const newPayment: Payment = {
+      ...payment,
+      id,
+      paymentDate: new Date(),
+      currency: payment.currency || "USD",
+      transactionId: payment.transactionId || null,
+      billingAddress: payment.billingAddress || null
+    };
+    this.paymentsData.set(id, newPayment);
+    
+    // Update booking payment status if a bookingId is provided
+    if (payment.bookingId) {
+      const booking = this.bookingsData.get(payment.bookingId);
+      if (booking) {
+        const updatedBooking = {
+          ...booking,
+          paymentId: id.toString(),
+          paymentStatus: payment.status,
+          status: payment.status === 'completed' ? 'confirmed' as const : booking.status,
+          updatedAt: new Date()
+        };
+        this.bookingsData.set(payment.bookingId, updatedBooking);
+      }
+    }
+    
+    return newPayment;
+  }
+  
+  async updatePaymentStatus(id: number, status: string): Promise<Payment | undefined> {
+    const existingPayment = this.paymentsData.get(id);
+    if (!existingPayment) return undefined;
+    
+    const updatedPayment = {
+      ...existingPayment,
+      status
+    };
+    this.paymentsData.set(id, updatedPayment);
+    
+    // Update booking payment status if this payment is associated with a booking
+    const booking = this.bookingsData.get(existingPayment.bookingId);
+    if (booking) {
+      const updatedBooking = {
+        ...booking,
+        paymentStatus: status,
+        status: status === 'completed' ? 'confirmed' as const : booking.status,
+        updatedAt: new Date()
+      };
+      this.bookingsData.set(existingPayment.bookingId, updatedBooking);
+    }
+    
+    return updatedPayment;
   }
 
   // Amenity methods
@@ -384,7 +496,11 @@ export class MemStorage implements IStorage {
   
   async createAmenity(amenity: InsertAmenity): Promise<Amenity> {
     const id = this.currentAmenityIds++;
-    const newAmenity: Amenity = { ...amenity, id };
+    const newAmenity: Amenity = { 
+      ...amenity, 
+      id,
+      category: amenity.category || null 
+    };
     this.amenitiesData.set(id, newAmenity);
     return newAmenity;
   }
@@ -394,15 +510,133 @@ export class MemStorage implements IStorage {
     return Array.from(this.testimonialsData.values());
   }
   
+  async getTestimonialsByCruise(cruiseId: number): Promise<Testimonial[]> {
+    return Array.from(this.testimonialsData.values()).filter(
+      (testimonial) => testimonial.cruiseId === cruiseId
+    );
+  }
+  
   async getTestimonial(id: number): Promise<Testimonial | undefined> {
     return this.testimonialsData.get(id);
   }
   
   async createTestimonial(testimonial: InsertTestimonial): Promise<Testimonial> {
     const id = this.currentTestimonialIds++;
-    const newTestimonial: Testimonial = { ...testimonial, id };
+    const now = new Date();
+    const newTestimonial: Testimonial = { 
+      ...testimonial, 
+      id,
+      createdAt: now,
+      isVerified: false,
+      cruiseId: testimonial.cruiseId || null,
+      userId: testimonial.userId || null,
+      avatarUrl: testimonial.avatarUrl || null
+    };
     this.testimonialsData.set(id, newTestimonial);
     return newTestimonial;
+  }
+  
+  async verifyTestimonial(id: number): Promise<Testimonial | undefined> {
+    const existingTestimonial = this.testimonialsData.get(id);
+    if (!existingTestimonial) return undefined;
+    
+    const updatedTestimonial = { 
+      ...existingTestimonial, 
+      isVerified: true
+    };
+    this.testimonialsData.set(id, updatedTestimonial);
+    return updatedTestimonial;
+  }
+  
+  // Enquiry methods (Contact Us)
+  async getEnquiries(): Promise<Enquiry[]> {
+    return Array.from(this.enquiriesData.values());
+  }
+  
+  async getEnquiriesByUser(userId: number): Promise<Enquiry[]> {
+    return Array.from(this.enquiriesData.values()).filter(
+      (enquiry) => enquiry.userId === userId
+    );
+  }
+  
+  async getEnquiry(id: number): Promise<Enquiry | undefined> {
+    return this.enquiriesData.get(id);
+  }
+  
+  async createEnquiry(enquiry: InsertEnquiry): Promise<Enquiry> {
+    const id = this.currentEnquiryIds++;
+    const now = new Date();
+    const newEnquiry: Enquiry = {
+      ...enquiry,
+      id,
+      status: "submitted",
+      createdAt: now,
+      updatedAt: now,
+      assignedToUserId: null,
+      userId: enquiry.userId || null,
+      phone: enquiry.phone || null
+    };
+    this.enquiriesData.set(id, newEnquiry);
+    return newEnquiry;
+  }
+  
+  async updateEnquiryStatus(id: number, status: string): Promise<Enquiry | undefined> {
+    const existingEnquiry = this.enquiriesData.get(id);
+    if (!existingEnquiry) return undefined;
+    
+    const updatedEnquiry = {
+      ...existingEnquiry,
+      status: status as "submitted" | "in_review" | "responded" | "closed",
+      updatedAt: new Date()
+    };
+    this.enquiriesData.set(id, updatedEnquiry);
+    return updatedEnquiry;
+  }
+  
+  async assignEnquiry(id: number, userId: number): Promise<Enquiry | undefined> {
+    const existingEnquiry = this.enquiriesData.get(id);
+    if (!existingEnquiry) return undefined;
+    
+    const updatedEnquiry = {
+      ...existingEnquiry,
+      assignedToUserId: userId,
+      status: existingEnquiry.status === "submitted" ? "in_review" as const : existingEnquiry.status,
+      updatedAt: new Date()
+    };
+    this.enquiriesData.set(id, updatedEnquiry);
+    return updatedEnquiry;
+  }
+  
+  // Enquiry Response methods
+  async getEnquiryResponses(enquiryId: number): Promise<EnquiryResponse[]> {
+    return Array.from(this.enquiryResponsesData.values()).filter(
+      (response) => response.enquiryId === enquiryId
+    );
+  }
+  
+  async createEnquiryResponse(response: InsertEnquiryResponse): Promise<EnquiryResponse> {
+    const id = this.currentEnquiryResponseIds++;
+    const now = new Date();
+    const newResponse: EnquiryResponse = {
+      ...response,
+      id,
+      respondedAt: now,
+      respondedByUserId: response.respondedByUserId || null
+    };
+    this.enquiryResponsesData.set(id, newResponse);
+    
+    // Update enquiry status
+    const enquiry = this.enquiriesData.get(response.enquiryId);
+    if (enquiry) {
+      const updatedEnquiry = {
+        ...enquiry,
+        status: "responded" as const,
+        updatedAt: now
+      };
+      this.enquiriesData.set(response.enquiryId, updatedEnquiry);
+    }
+    
+    return newResponse;
   }
 
   // Initialize with sample data
