@@ -1,14 +1,16 @@
-import { pgTable, text, serial, integer, boolean, date, doublePrecision, jsonb, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, serial, timestamp, boolean, jsonb, date, doublePrecision, pgEnum } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
 
-// Enums
+// All enums need to be defined first
 export const bookingStatusEnum = pgEnum("booking_status", [
-  "pending", 
-  "confirmed", 
-  "completed", 
-  "cancelled"
+  "pending",      // Initial state when booking is created
+  "confirmed",    // Payment received and booking confirmed
+  "in_progress",  // The cruise has started 
+  "completed",    // The cruise has ended
+  "cancelled",    // Booking was cancelled by customer or company
+  "refunded"      // Booking was cancelled and payment refunded
 ]);
 
 export const enquiryStatusEnum = pgEnum("enquiry_status", [
@@ -25,7 +27,36 @@ export const cabinTypeEnum = pgEnum("cabin_type", [
   "Suite"
 ]);
 
-// Users table
+export const cancellationReasonEnum = pgEnum("cancellation_reason", [
+  "customer_request",
+  "schedule_change",
+  "medical",
+  "weather",
+  "emergency",
+  "policy_violation",
+  "other"
+]);
+
+export const paymentStatusEnum = pgEnum("payment_status", [
+  "pending",      // Payment initiated but not completed
+  "processing",   // Payment being processed by payment gateway
+  "completed",    // Payment successfully completed
+  "failed",       // Payment attempt failed
+  "refunded",     // Payment was refunded
+  "partially_refunded" // Payment was partially refunded
+]);
+
+export const paymentMethodEnum = pgEnum("payment_method", [
+  "credit_card",
+  "debit_card",
+  "paypal",
+  "bank_transfer",
+  "stripe",
+  "apple_pay",
+  "google_pay"
+]);
+
+// Tables
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
@@ -47,13 +78,6 @@ export const users = pgTable("users", {
   resetTokenExpiry: timestamp("reset_token_expiry"),
 });
 
-// Users relations
-export const usersRelations = relations(users, ({ many }) => ({
-  bookings: many(bookings),
-  enquiries: many(enquiries),
-}));
-
-// Destinations table
 export const destinations = pgTable("destinations", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -65,12 +89,6 @@ export const destinations = pgTable("destinations", {
   durationRange: text("duration_range").notNull(),
 });
 
-// Destinations relations
-export const destinationsRelations = relations(destinations, ({ many }) => ({
-  cruises: many(cruises),
-}));
-
-// Cruises table
 export const cruises = pgTable("cruises", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
@@ -90,16 +108,6 @@ export const cruises = pgTable("cruises", {
   availableDates: date("available_dates").array(),
 });
 
-// Cruises relations
-export const cruisesRelations = relations(cruises, ({ one, many }) => ({
-  destination: one(destinations, {
-    fields: [cruises.destinationId],
-    references: [destinations.id],
-  }),
-  bookings: many(bookings),
-}));
-
-// Cabin Types table
 export const cabinTypes = pgTable("cabin_types", {
   id: serial("id").primaryKey(),
   cruiseId: integer("cruise_id").notNull(),
@@ -111,46 +119,35 @@ export const cabinTypes = pgTable("cabin_types", {
   imageUrl: text("image_url"),
 });
 
-// Cabin Types relations
-export const cabinTypesRelations = relations(cabinTypes, ({ one }) => ({
-  cruise: one(cruises, {
-    fields: [cabinTypes.cruiseId],
-    references: [cruises.id],
-  }),
-}));
-
-// Bookings table
 export const bookings = pgTable("bookings", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   cruiseId: integer("cruise_id").notNull(),
+  cabinTypeId: integer("cabin_type_id"),  // References specific cabin type
   bookingDate: timestamp("booking_date").defaultNow().notNull(),
   departureDate: date("departure_date").notNull(),
+  returnDate: date("return_date").notNull(), // Added return date
   totalPrice: integer("total_price").notNull(),
   numberOfGuests: integer("number_of_guests").notNull(),
   cabinType: text("cabin_type").notNull(),
   guestDetails: jsonb("guest_details").notNull(),
   status: bookingStatusEnum("status").notNull().default("pending"),
-  paymentId: text("payment_id"),
-  paymentStatus: text("payment_status"),
+  statusHistory: jsonb("status_history"), // Track status changes with timestamps
+  paymentStatus: paymentStatusEnum("payment_status").default("pending"),
   specialRequests: text("special_requests"),
-  bookingReference: text("booking_reference"),
+  bookingReference: text("booking_reference").notNull().unique(), // Make booking reference required and unique
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  cancellationDate: timestamp("cancellation_date"), // When booking was cancelled
+  cancellationReason: cancellationReasonEnum("cancellation_reason"), // Why booking was cancelled
+  cancellationNotes: text("cancellation_notes"), // Additional cancellation details
+  refundAmount: integer("refund_amount"), // How much was refunded
+  refundDate: timestamp("refund_date"), // When refund was processed
+  checkedIn: boolean("checked_in").default(false), // Whether passengers have checked in
+  checkInDate: timestamp("check_in_date"), // When passengers checked in
+  termsAccepted: boolean("terms_accepted").default(false).notNull(), // Customer accepted terms
+  lastNotificationSent: timestamp("last_notification_sent"), // Track when last notification was sent
 });
 
-// Bookings relations
-export const bookingsRelations = relations(bookings, ({ one, many }) => ({
-  user: one(users, {
-    fields: [bookings.userId],
-    references: [users.id],
-  }),
-  cruise: one(cruises, {
-    fields: [bookings.cruiseId],
-    references: [cruises.id],
-  }),
-}));
-
-// Amenities table
 export const amenities = pgTable("amenities", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -159,7 +156,6 @@ export const amenities = pgTable("amenities", {
   category: text("category"),
 });
 
-// Testimonials table
 export const testimonials = pgTable("testimonials", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -173,19 +169,6 @@ export const testimonials = pgTable("testimonials", {
   isVerified: boolean("is_verified").default(false),
 });
 
-// Testimonials relations
-export const testimonialsRelations = relations(testimonials, ({ one }) => ({
-  cruise: one(cruises, {
-    fields: [testimonials.cruiseId],
-    references: [cruises.id],
-  }),
-  user: one(users, {
-    fields: [testimonials.userId],
-    references: [users.id],
-  }),
-}));
-
-// Customer Enquiries (Contact Us)
 export const enquiries = pgTable("enquiries", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -200,16 +183,6 @@ export const enquiries = pgTable("enquiries", {
   userId: integer("user_id"),
 });
 
-// Enquiries relations
-export const enquiriesRelations = relations(enquiries, ({ one, many }) => ({
-  user: one(users, {
-    fields: [enquiries.userId],
-    references: [users.id],
-  }),
-  responses: many(enquiryResponses),
-}));
-
-// Enquiry Responses
 export const enquiryResponses = pgTable("enquiry_responses", {
   id: serial("id").primaryKey(),
   enquiryId: integer("enquiry_id").notNull(),
@@ -218,7 +191,86 @@ export const enquiryResponses = pgTable("enquiry_responses", {
   respondedAt: timestamp("responded_at").defaultNow().notNull(),
 });
 
-// Enquiry responses relations
+export const payments = pgTable("payments", {
+  id: serial("id").primaryKey(),
+  bookingId: integer("booking_id").notNull(),
+  amount: integer("amount").notNull(),
+  currency: text("currency").default("USD").notNull(),
+  status: paymentStatusEnum("status").notNull().default("pending"),
+  paymentMethod: paymentMethodEnum("payment_method").notNull(),
+  transactionId: text("transaction_id"),
+  paymentIntentId: text("payment_intent_id"),  // For Stripe payment intents
+  paymentDate: timestamp("payment_date").defaultNow().notNull(),
+  billingAddress: jsonb("billing_address"),
+  cardLast4: text("card_last4"),  // Last 4 digits of card for reference
+  expiryMonth: text("expiry_month"), // Card expiry month (stored separately for security)
+  expiryYear: text("expiry_year"),   // Card expiry year
+  cardholderName: text("cardholder_name"),
+  refundAmount: integer("refund_amount"), // Amount refunded if applicable
+  refundDate: timestamp("refund_date"),   // Date of refund if applicable
+  gatewayResponse: jsonb("gateway_response"), // Store response from payment gateway
+});
+
+// Relations
+export const usersRelations = relations(users, ({ many }) => ({
+  bookings: many(bookings),
+  enquiries: many(enquiries),
+}));
+
+export const destinationsRelations = relations(destinations, ({ many }) => ({
+  cruises: many(cruises),
+}));
+
+export const cruisesRelations = relations(cruises, ({ one, many }) => ({
+  destination: one(destinations, {
+    fields: [cruises.destinationId],
+    references: [destinations.id],
+  }),
+  bookings: many(bookings),
+}));
+
+export const cabinTypesRelations = relations(cabinTypes, ({ one }) => ({
+  cruise: one(cruises, {
+    fields: [cabinTypes.cruiseId],
+    references: [cruises.id],
+  }),
+}));
+
+export const bookingsRelations = relations(bookings, ({ one, many }) => ({
+  user: one(users, {
+    fields: [bookings.userId],
+    references: [users.id],
+  }),
+  cruise: one(cruises, {
+    fields: [bookings.cruiseId],
+    references: [cruises.id],
+  }),
+  cabinType: one(cabinTypes, {
+    fields: [bookings.cabinTypeId],
+    references: [cabinTypes.id],
+  }),
+  payments: many(payments),
+}));
+
+export const testimonialsRelations = relations(testimonials, ({ one }) => ({
+  cruise: one(cruises, {
+    fields: [testimonials.cruiseId],
+    references: [cruises.id],
+  }),
+  user: one(users, {
+    fields: [testimonials.userId],
+    references: [users.id],
+  }),
+}));
+
+export const enquiriesRelations = relations(enquiries, ({ one, many }) => ({
+  user: one(users, {
+    fields: [enquiries.userId],
+    references: [users.id],
+  }),
+  responses: many(enquiryResponses),
+}));
+
 export const enquiryResponsesRelations = relations(enquiryResponses, ({ one }) => ({
   enquiry: one(enquiries, {
     fields: [enquiryResponses.enquiryId],
@@ -226,20 +278,6 @@ export const enquiryResponsesRelations = relations(enquiryResponses, ({ one }) =
   }),
 }));
 
-// Payment Information
-export const payments = pgTable("payments", {
-  id: serial("id").primaryKey(),
-  bookingId: integer("booking_id").notNull(),
-  amount: integer("amount").notNull(),
-  currency: text("currency").default("USD").notNull(),
-  status: text("status").notNull(),
-  paymentMethod: text("payment_method").notNull(),
-  transactionId: text("transaction_id"),
-  paymentDate: timestamp("payment_date").defaultNow().notNull(),
-  billingAddress: jsonb("billing_address"),
-});
-
-// Payment relations
 export const paymentsRelations = relations(payments, ({ one }) => ({
   booking: one(bookings, {
     fields: [payments.bookingId],
@@ -248,7 +286,9 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
 }));
 
 // Zod schemas for data validation
-export const insertUserSchema = createInsertSchema(users).pick({
+export const insertUserSchema = createInsertSchema(users, {
+  email: z.string().email("Invalid email address"),
+}).pick({
   username: true,
   email: true,
   password: true,
@@ -265,23 +305,32 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export const insertDestinationSchema = createInsertSchema(destinations);
 export const insertCruiseSchema = createInsertSchema(cruises);
 export const insertBookingSchema = createInsertSchema(bookings).omit({
+  id: true,
   bookingDate: true,
   updatedAt: true,
-  bookingReference: true,
+  statusHistory: true,
 });
 export const insertAmenitySchema = createInsertSchema(amenities);
-export const insertTestimonialSchema = createInsertSchema(testimonials);
+export const insertTestimonialSchema = createInsertSchema(testimonials).omit({
+  id: true,
+  createdAt: true,
+  isVerified: true,
+});
 export const insertEnquirySchema = createInsertSchema(enquiries).omit({
+  id: true,
   createdAt: true,
   updatedAt: true,
   status: true,
 });
 export const insertEnquiryResponseSchema = createInsertSchema(enquiryResponses).omit({
+  id: true,
   respondedAt: true,
 });
 export const insertCabinTypeSchema = createInsertSchema(cabinTypes);
 export const insertPaymentSchema = createInsertSchema(payments).omit({
+  id: true,
   paymentDate: true,
+  gatewayResponse: true,
 });
 
 // Login schema
@@ -292,7 +341,6 @@ export const loginSchema = z.object({
 
 // Registration schema with additional validation
 export const registerSchema = insertUserSchema.extend({
-  email: z.string().email("Invalid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
   confirmPassword: z.string(),
 }).refine(data => data.password === data.confirmPassword, {

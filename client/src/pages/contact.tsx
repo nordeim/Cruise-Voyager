@@ -40,12 +40,15 @@ const ContactPage = () => {
       const res = await apiRequest("POST", "/api/contact", data);
       return await res.json();
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
+      // Only display one type of confirmation - either toast or in-form
       setSubmitted(true);
-      toast({
-        title: "Message Sent",
-        description: "Thank you for your message. We will get back to you soon.",
-      });
+      
+      // We'll remove the toast to avoid double notifications
+      // and rely on the in-form confirmation which is more visible
+      
+      // Reset form fields but this won't be visible 
+      // since we're showing the success message component
       form.reset();
     },
     onError: (error: Error) => {
