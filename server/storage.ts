@@ -53,13 +53,21 @@ export interface IStorage {
   getBookingByReference(reference: string): Promise<Booking | undefined>;
   createBooking(booking: InsertBooking): Promise<Booking>;
   updateBookingStatus(id: number, status: string): Promise<Booking | undefined>;
-  cancelBooking(id: number, reason?: string): Promise<Booking | undefined>;
+  cancelBooking(id: number, reason: string, cancellationReason?: string): Promise<Booking | undefined>;
+  updateBookingStatusHistory(id: number, status: string): Promise<Booking | undefined>;
+  processRefund(bookingId: number, amount: number): Promise<Booking | undefined>;
+  checkInPassengers(bookingId: number): Promise<Booking | undefined>;
+  getUpcomingBookings(userId: number): Promise<Booking[]>;
+  getPastBookings(userId: number): Promise<Booking[]>;
   
   // Payment methods
   getPayments(bookingId: number): Promise<Payment[]>;
   getPayment(id: number): Promise<Payment | undefined>;
   createPayment(payment: InsertPayment): Promise<Payment>;
   updatePaymentStatus(id: number, status: string): Promise<Payment | undefined>;
+  processStripePayment(bookingId: number, paymentData: any): Promise<Payment | undefined>;
+  refundPayment(id: number, amount: number): Promise<Payment | undefined>;
+  getPaymentsByStatus(status: string): Promise<Payment[]>;
   
   // Amenity methods
   getAmenities(): Promise<Amenity[]>;
@@ -405,18 +413,123 @@ export class MemStorage implements IStorage {
     return updatedBooking;
   }
   
-  async cancelBooking(id: number, reason?: string): Promise<Booking | undefined> {
+  async cancelBooking(id: number, reason: string, cancellationReason?: string): Promise<Booking | undefined> {
     const existingBooking = this.bookingsData.get(id);
     if (!existingBooking) return undefined;
+    
+    const now = new Date();
+    // Create status history if it doesn't exist
+    const statusHistory = existingBooking.statusHistory || [];
+    statusHistory.push({
+      from: existingBooking.status,
+      to: "cancelled",
+      timestamp: now.toISOString(),
+      reason: cancellationReason || "customer_request"
+    });
     
     const updatedBooking = { 
       ...existingBooking, 
       status: "cancelled" as const,
       specialRequests: reason || existingBooking.specialRequests,
-      updatedAt: new Date()
+      updatedAt: now,
+      cancellationDate: now,
+      cancellationReason: cancellationReason || "customer_request" as const,
+      cancellationNotes: reason,
+      statusHistory
     };
     this.bookingsData.set(id, updatedBooking);
     return updatedBooking;
+  }
+  
+  async updateBookingStatusHistory(id: number, status: string): Promise<Booking | undefined> {
+    const existingBooking = this.bookingsData.get(id);
+    if (!existingBooking) return undefined;
+    
+    const now = new Date();
+    const statusHistory = existingBooking.statusHistory || [];
+    statusHistory.push({
+      from: existingBooking.status,
+      to: status,
+      timestamp: now.toISOString()
+    });
+    
+    const updatedBooking = { 
+      ...existingBooking, 
+      status: status as any, // Cast to any to avoid type issues
+      updatedAt: now,
+      statusHistory
+    };
+    this.bookingsData.set(id, updatedBooking);
+    return updatedBooking;
+  }
+  
+  async processRefund(bookingId: number, amount: number): Promise<Booking | undefined> {
+    const existingBooking = this.bookingsData.get(bookingId);
+    if (!existingBooking) return undefined;
+    
+    const now = new Date();
+    const updatedBooking = { 
+      ...existingBooking, 
+      status: "refunded" as const,
+      paymentStatus: "refunded" as any,
+      refundAmount: amount,
+      refundDate: now,
+      updatedAt: now
+    };
+    this.bookingsData.set(bookingId, updatedBooking);
+    
+    // Also update the payment if it exists
+    if (existingBooking.paymentId) {
+      const payment = Array.from(this.paymentsData.values()).find(
+        p => p.id.toString() === existingBooking.paymentId
+      );
+      if (payment) {
+        const updatedPayment = {
+          ...payment,
+          status: "refunded" as any,
+          refundAmount: amount,
+          refundDate: now
+        };
+        this.paymentsData.set(payment.id, updatedPayment);
+      }
+    }
+    
+    return updatedBooking;
+  }
+  
+  async checkInPassengers(bookingId: number): Promise<Booking | undefined> {
+    const existingBooking = this.bookingsData.get(bookingId);
+    if (!existingBooking) return undefined;
+    
+    const now = new Date();
+    const updatedBooking = { 
+      ...existingBooking, 
+      checkedIn: true,
+      checkInDate: now,
+      updatedAt: now
+    };
+    this.bookingsData.set(bookingId, updatedBooking);
+    return updatedBooking;
+  }
+  
+  async getUpcomingBookings(userId: number): Promise<Booking[]> {
+    const now = new Date();
+    return Array.from(this.bookingsData.values()).filter(
+      booking => 
+        booking.userId === userId && 
+        booking.status !== "cancelled" &&
+        booking.status !== "refunded" &&
+        new Date(booking.departureDate) > now
+    );
+  }
+  
+  async getPastBookings(userId: number): Promise<Booking[]> {
+    const now = new Date();
+    return Array.from(this.bookingsData.values()).filter(
+      booking => 
+        booking.userId === userId && 
+        (booking.status === "completed" || new Date(booking.returnDate) < now)
+    );
   }
   
   // Payment methods
@@ -466,7 +579,7 @@ export class MemStorage implements IStorage {
     
     const updatedPayment = {
       ...existingPayment,
-      status
+      status: status as any // Cast to avoid type issues
     };
     this.paymentsData.set(id, updatedPayment);
     
@@ -475,7 +588,7 @@ export class MemStorage implements IStorage {
     if (booking) {
       const updatedBooking = {
         ...booking,
-        paymentStatus: status,
+        paymentStatus: status as any, // Cast to avoid type issues
         status: status === 'completed' ? 'confirmed' as const : booking.status,
         updatedAt: new Date()
       };
@@ -483,6 +596,87 @@ export class MemStorage implements IStorage {
     }
     
     return updatedPayment;
+  }
+  
+  async processStripePayment(bookingId: number, paymentData: any): Promise<Payment | undefined> {
+    const booking = this.bookingsData.get(bookingId);
+    if (!booking) return undefined;
+    
+    const now = new Date();
+    
+    // Create payment record
+    const id = this.currentPaymentIds++;
+    const newPayment: Payment = {
+      id,
+      bookingId,
+      amount: booking.totalPrice,
+      currency: "USD",
+      status: "processing" as any, // Start as processing
+      paymentMethod: "stripe" as any,
+      transactionId: null,
+      paymentIntentId: paymentData.paymentIntentId || null,
+      paymentDate: now,
+      billingAddress: paymentData.billingAddress || null,
+      cardLast4: paymentData.cardLast4 || null,
+      expiryMonth: paymentData.expiryMonth || null,
+      expiryYear: paymentData.expiryYear || null,
+      cardholderName: paymentData.cardholderName || null,
+      refundAmount: null,
+      refundDate: null,
+      gatewayResponse: { received: now } as any
+    };
+    
+    this.paymentsData.set(id, newPayment);
+    
+    // Update booking with payment information
+    const updatedBooking = {
+      ...booking,
+      paymentStatus: "processing" as any,
+      updatedAt: now
+    };
+    this.bookingsData.set(bookingId, updatedBooking);
+    
+    return newPayment;
+  }
+  
+  async refundPayment(id: number, amount: number): Promise<Payment | undefined> {
+    const existingPayment = this.paymentsData.get(id);
+    if (!existingPayment) return undefined;
+    
+    const now = new Date();
+    const updatedPayment = {
+      ...existingPayment,
+      status: amount === existingPayment.amount ? "refunded" as any : "partially_refunded" as any,
+      refundAmount: amount,
+      refundDate: now,
+      gatewayResponse: { 
+        ...existingPayment.gatewayResponse as any,
+        refunded: now 
+      }
+    };
+    this.paymentsData.set(id, updatedPayment);
+    
+    // Also update the booking if it exists
+    const booking = this.bookingsData.get(existingPayment.bookingId);
+    if (booking) {
+      const updatedBooking = {
+        ...booking,
+        paymentStatus: updatedPayment.status,
+        status: amount === existingPayment.amount ? "refunded" as const : booking.status,
+        refundAmount: amount,
+        refundDate: now,
+        updatedAt: now
+      };
+      this.bookingsData.set(existingPayment.bookingId, updatedBooking);
+    }
+    
+    return updatedPayment;
+  }
+  
+  async getPaymentsByStatus(status: string): Promise<Payment[]> {
+    return Array.from(this.paymentsData.values()).filter(
+      payment => payment.status === status
+    );
   }
 
   // Amenity methods
