@@ -4,8 +4,16 @@ import {
   cruises, type Cruise, type InsertCruise,
   bookings, type Booking, type InsertBooking,
   amenities, type Amenity, type InsertAmenity,
-  testimonials, type Testimonial, type InsertTestimonial
+  testimonials, type Testimonial, type InsertTestimonial,
+  enquiries, type Enquiry, type InsertEnquiry,
+  enquiryResponses, type EnquiryResponse, type InsertEnquiryResponse,
+  cabinTypes, type CabinType, type InsertCabinType,
+  payments, type Payment, type InsertPayment
 } from "@shared/schema";
+import { randomUUID } from "crypto";
+import { createHash } from "crypto";
+import { DB_URL } from "./config";
+import pkg from "pg";
 
 // modify the interface with any CRUD methods
 // you might need
@@ -17,6 +25,10 @@ export interface IStorage {
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, userData: Partial<InsertUser>): Promise<User | undefined>;
+  updateUserPassword(id: number, password: string): Promise<User | undefined>;
+  updateUserLastLogin(id: number): Promise<User | undefined>;
+  createPasswordResetToken(email: string): Promise<string | undefined>;
+  resetPassword(token: string, password: string): Promise<boolean>;
   
   // Destination methods
   getDestinations(): Promise<Destination[]>;
@@ -30,11 +42,24 @@ export interface IStorage {
   createCruise(cruise: InsertCruise): Promise<Cruise>;
   searchCruises(params: any): Promise<Cruise[]>;
 
+  // Cabin Types methods
+  getCabinTypes(cruiseId: number): Promise<CabinType[]>;
+  getCabinType(id: number): Promise<CabinType | undefined>;
+  createCabinType(cabinType: InsertCabinType): Promise<CabinType>;
+
   // Booking methods
   getBookings(userId: number): Promise<Booking[]>;
   getBooking(id: number): Promise<Booking | undefined>;
+  getBookingByReference(reference: string): Promise<Booking | undefined>;
   createBooking(booking: InsertBooking): Promise<Booking>;
   updateBookingStatus(id: number, status: string): Promise<Booking | undefined>;
+  cancelBooking(id: number, reason?: string): Promise<Booking | undefined>;
+  
+  // Payment methods
+  getPayments(bookingId: number): Promise<Payment[]>;
+  getPayment(id: number): Promise<Payment | undefined>;
+  createPayment(payment: InsertPayment): Promise<Payment>;
+  updatePaymentStatus(id: number, status: string): Promise<Payment | undefined>;
   
   // Amenity methods
   getAmenities(): Promise<Amenity[]>;
@@ -43,8 +68,22 @@ export interface IStorage {
   
   // Testimonial methods
   getTestimonials(): Promise<Testimonial[]>;
+  getTestimonialsByCruise(cruiseId: number): Promise<Testimonial[]>;
   getTestimonial(id: number): Promise<Testimonial | undefined>;
   createTestimonial(testimonial: InsertTestimonial): Promise<Testimonial>;
+  verifyTestimonial(id: number): Promise<Testimonial | undefined>;
+
+  // Enquiry methods (Contact Us)
+  getEnquiries(): Promise<Enquiry[]>;
+  getEnquiriesByUser(userId: number): Promise<Enquiry[]>;
+  getEnquiry(id: number): Promise<Enquiry | undefined>;
+  createEnquiry(enquiry: InsertEnquiry): Promise<Enquiry>;
+  updateEnquiryStatus(id: number, status: string): Promise<Enquiry | undefined>;
+  assignEnquiry(id: number, userId: number): Promise<Enquiry | undefined>;
+  
+  // Enquiry Response methods
+  getEnquiryResponses(enquiryId: number): Promise<EnquiryResponse[]>;
+  createEnquiryResponse(response: InsertEnquiryResponse): Promise<EnquiryResponse>;
 }
 
 export class MemStorage implements IStorage {
@@ -54,6 +93,10 @@ export class MemStorage implements IStorage {
   private bookingsData: Map<number, Booking>;
   private amenitiesData: Map<number, Amenity>;
   private testimonialsData: Map<number, Testimonial>;
+  private cabinTypesData: Map<number, CabinType>;
+  private paymentsData: Map<number, Payment>;
+  private enquiriesData: Map<number, Enquiry>;
+  private enquiryResponsesData: Map<number, EnquiryResponse>;
   
   private currentUserIds: number;
   private currentDestinationIds: number;
@@ -61,6 +104,10 @@ export class MemStorage implements IStorage {
   private currentBookingIds: number;
   private currentAmenityIds: number;
   private currentTestimonialIds: number;
+  private currentCabinTypeIds: number;
+  private currentPaymentIds: number;
+  private currentEnquiryIds: number;
+  private currentEnquiryResponseIds: number;
 
   constructor() {
     this.usersData = new Map();
@@ -69,6 +116,10 @@ export class MemStorage implements IStorage {
     this.bookingsData = new Map();
     this.amenitiesData = new Map();
     this.testimonialsData = new Map();
+    this.cabinTypesData = new Map();
+    this.paymentsData = new Map();
+    this.enquiriesData = new Map();
+    this.enquiryResponsesData = new Map();
     
     this.currentUserIds = 1;
     this.currentDestinationIds = 1;
@@ -76,6 +127,10 @@ export class MemStorage implements IStorage {
     this.currentBookingIds = 1;
     this.currentAmenityIds = 1;
     this.currentTestimonialIds = 1;
+    this.currentCabinTypeIds = 1;
+    this.currentPaymentIds = 1;
+    this.currentEnquiryIds = 1;
+    this.currentEnquiryResponseIds = 1;
     
     // Initialize with sample data
     this.initSampleData();
@@ -100,7 +155,17 @@ export class MemStorage implements IStorage {
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const id = this.currentUserIds++;
-    const user: User = { ...insertUser, id };
+    const now = new Date();
+    const user: User = { 
+      ...insertUser, 
+      id,
+      createdAt: now,
+      updatedAt: now,
+      lastLogin: null,
+      isVerified: false,
+      resetToken: null,
+      resetTokenExpiry: null
+    };
     this.usersData.set(id, user);
     return user;
   }
@@ -109,9 +174,78 @@ export class MemStorage implements IStorage {
     const existingUser = this.usersData.get(id);
     if (!existingUser) return undefined;
     
-    const updatedUser = { ...existingUser, ...userData };
+    const updatedUser = { 
+      ...existingUser, 
+      ...userData,
+      updatedAt: new Date()
+    };
     this.usersData.set(id, updatedUser);
     return updatedUser;
+  }
+  
+  async updateUserPassword(id: number, password: string): Promise<User | undefined> {
+    const existingUser = this.usersData.get(id);
+    if (!existingUser) return undefined;
+    
+    const updatedUser = { 
+      ...existingUser, 
+      password,
+      updatedAt: new Date(),
+      resetToken: null,
+      resetTokenExpiry: null
+    };
+    this.usersData.set(id, updatedUser);
+    return updatedUser;
+  }
+  
+  async updateUserLastLogin(id: number): Promise<User | undefined> {
+    const existingUser = this.usersData.get(id);
+    if (!existingUser) return undefined;
+    
+    const updatedUser = { 
+      ...existingUser, 
+      lastLogin: new Date()
+    };
+    this.usersData.set(id, updatedUser);
+    return updatedUser;
+  }
+  
+  async createPasswordResetToken(email: string): Promise<string | undefined> {
+    const user = await this.getUserByEmail(email);
+    if (!user) return undefined;
+    
+    const token = randomUUID();
+    const expiry = new Date();
+    expiry.setHours(expiry.getHours() + 2); // Token valid for 2 hours
+    
+    const updatedUser = { 
+      ...user, 
+      resetToken: token,
+      resetTokenExpiry: expiry,
+      updatedAt: new Date()
+    };
+    this.usersData.set(user.id, updatedUser);
+    return token;
+  }
+  
+  async resetPassword(token: string, password: string): Promise<boolean> {
+    const user = Array.from(this.usersData.values()).find(
+      (user) => user.resetToken === token && 
+                user.resetTokenExpiry && 
+                user.resetTokenExpiry > new Date()
+    );
+    
+    if (!user) return false;
+    
+    const updatedUser = { 
+      ...user, 
+      password,
+      resetToken: null,
+      resetTokenExpiry: null,
+      updatedAt: new Date()
+    };
+    this.usersData.set(user.id, updatedUser);
+    return true;
   }
 
   // Destination methods
@@ -147,9 +281,35 @@ export class MemStorage implements IStorage {
   
   async createCruise(cruise: InsertCruise): Promise<Cruise> {
     const id = this.currentCruiseIds++;
-    const newCruise: Cruise = { ...cruise, id };
+    const newCruise: Cruise = { 
+      ...cruise, 
+      id,
+      availableDates: cruise.availableDates || null
+    };
     this.cruisesData.set(id, newCruise);
     return newCruise;
+  }
+  
+  // Cabin Types methods
+  async getCabinTypes(cruiseId: number): Promise<CabinType[]> {
+    return Array.from(this.cabinTypesData.values()).filter(
+      cabin => cabin.cruiseId === cruiseId
+    );
+  }
+  
+  async getCabinType(id: number): Promise<CabinType | undefined> {
+    return this.cabinTypesData.get(id);
+  }
+  
+  async createCabinType(cabinType: InsertCabinType): Promise<CabinType> {
+    const id = this.currentCabinTypeIds++;
+    const newCabinType: CabinType = {
+      ...cabinType,
+      id,
+      amenities: cabinType.amenities || null
+    };
+    this.cabinTypesData.set(id, newCabinType);
+    return newCabinType;
   }
   
   async searchCruises(params: any): Promise<Cruise[]> {
