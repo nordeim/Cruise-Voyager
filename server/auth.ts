@@ -5,13 +5,13 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import bcrypt from "bcrypt";
 import { storage } from "./storage";
-import { User, LoginCredentials, RegisterData } from "@shared/schema";
+import { User as UserType, LoginCredentials, RegisterData } from "@shared/schema";
 import { pool } from "./db";
 import { APP_SECRET } from "./config";
 
 declare global {
   namespace Express {
-    interface User extends User {}
+    interface User extends UserType {}
   }
 }
 
