@@ -1,9 +1,8 @@
-![image](https://github.com/user-attachments/assets/7266295b-1fa6-44f5-9b73-28c2d5664bd3)
-![image](https://github.com/user-attachments/assets/f8142702-0046-493e-8dcd-5560b8044175)
-![image](https://github.com/user-attachments/assets/237aca7d-e655-49e5-a159-d55ae24b93da)
-![image](https://github.com/user-attachments/assets/d4c3da64-64e5-44d2-82a0-dac85b3d36c7)
-![image](https://github.com/user-attachments/assets/319773f4-4d2a-4ed2-9d22-686c08ce78ac)
-![image](https://github.com/user-attachments/assets/8338b6d5-3fe7-467c-a02a-451acdd2a89c)
+![image](https://github.com/user-attachments/assets/53a63d69-13f6-4e2b-905e-df017ac34cc9)
+![image](https://github.com/user-attachments/assets/c60cfd0f-30d6-4c07-970d-326f98acbc35)
+![image](https://github.com/user-attachments/assets/3eb23e10-bc69-4174-95e0-cea312e85a5e)
+![image](https://github.com/user-attachments/assets/6e11c7b8-b032-43c4-97d7-69bce3f1eee8)
+![image](https://github.com/user-attachments/assets/482cdd56-319f-4484-8bcb-73aa8c77f18c)
 
 ---
 # CruiseVoyager - Technical Design Overview
