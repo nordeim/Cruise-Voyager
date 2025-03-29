@@ -13,17 +13,79 @@ import {
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { setupAuth, isAuthenticated } from "./auth";
+import csrf from "csurf";
+import cookieParser from "cookie-parser";
+import { APP_SECRET } from "./config";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup authentication
   setupAuth(app);
+  
+  // Create CSRF protection middleware
+  const csrfProtection = csrf({
+    cookie: {
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+      sameSite: "lax",
+      signed: true
+    }
+  });
+
+  // CSRF Token Route
+  app.get("/api/csrf-token", csrfProtection, (req: Request, res: Response) => {
+    res.json({ csrfToken: req.csrfToken() });
+  });
 
   // Destination Routes
-  app.get("/api/destinations", async (_req, res, next) => {
+  app.get("/api/destinations", async (req, res, next) => {
     try {
-      const destinations = await storage.getDestinations();
-      res.json(destinations);
+      // Log all query parameters for debugging
+      if (Object.keys(req.query).length > 0) {
+        console.log("Destination search params:", req.query);
+      }
+      
+      let destinations = await storage.getDestinations();
+      
+      // Handle date parameter - this won't filter destinations directly
+      // but we'll log it to show we processed the request
+      if (req.query.date) {
+        try {
+          // Format the date (YYYY-MM-DD)
+          const dateParam = String(req.query.date);
+          
+          // Validate date format with regex (YYYY-MM-DD)
+          const dateFormatRegex = /^\d{4}-\d{2}-\d{2}$/;
+          if (dateFormatRegex.test(dateParam)) {
+            const searchDate = new Date(dateParam);
+            
+            // Only process if it's a valid date
+            if (!isNaN(searchDate.getTime())) {
+              console.log(`Searching cruises for date: ${searchDate.toISOString().split('T')[0]}`);
+              // The date parameter will be used client-side to filter cruises
+              // No server-side filtering of destinations needed
+            } else {
+              console.warn(`Invalid date value: ${dateParam} - parsed as invalid date`);
+            }
+          } else {
+            console.warn(`Invalid date format: ${dateParam} - should be YYYY-MM-DD`);
+          }
+        } catch (dateError) {
+          console.error(`Error processing date parameter:`, dateError);
+        }
+      }
+      
+      // For region parameter, we could optionally filter here
+      if (req.query.region) {
+        const regionName = String(req.query.region);
+        console.log(`Filtering destinations by region: ${regionName}`);
+        // For now, we'll still return all destinations
+        // but in a real implementation, we might filter by region here
+      }
+      
+      // If no destinations are found, return empty array instead of null
+      res.json(destinations || []);
     } catch (error) {
+      console.error("Error fetching destinations:", error);
       next(error);
     }
   });

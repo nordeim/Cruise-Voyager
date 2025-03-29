@@ -1,10 +1,62 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import cookieParser from "cookie-parser";
+import csrf from "csurf";
+import { APP_SECRET } from "./config";
+import rateLimit from "express-rate-limit";
 
 const app = express();
+
+// Trust proxy - important for rate limiting behind a reverse proxy
+app.set('trust proxy', 1);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Add cookie parser for CSRF
+app.use(cookieParser(APP_SECRET));
+
+// Setup CSRF protection
+const csrfProtection = csrf({
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    sameSite: "lax", // Changed from strict to lax to allow links from external sites
+    signed: true
+  }
+});
+
+// Create a global rate limiter to prevent brute force attacks
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: "Too many requests from this IP, please try again later"
+  }
+});
+
+// Apply rate limiting to all requests
+app.use('/api/', globalLimiter);
+
+// Map custom routes that need CSRF protection or exclusion
+const csrfExemptRoutes = [
+  '/api/auth/login',
+  '/api/auth/register',
+  '/api/auth/logout' // Add logout route to exempt list
+];
+
+// Apply CSRF protection
+app.use((req, res, next) => {
+  // Skip CSRF for GET requests and exempted routes
+  if (req.method === "GET" || csrfExemptRoutes.includes(req.path)) {
+    return next();
+  }
+  
+  csrfProtection(req, res, next);
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
